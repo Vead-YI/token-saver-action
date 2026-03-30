@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "token-saver-action"
+version = "0.1.0"
+description = "帮助用户在使用 AI、AI Agent 和 OpenClaw 时节约 Token 消耗"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+authors = [
+    { name = "Zuyang Li" }
+]
+keywords = ["llm", "token", "optimization", "prompt-compression", "ai-agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "tiktoken>=0.5.0",
+    "click>=8.0.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "black",
+    "ruff",
+]
+langchain = [
+    "langchain>=0.1.0",
+]
+openai = [
+    "openai>=1.0.0",
+]
+
+[project.scripts]
+token-saver = "token_saver.cli.main:cli"
+
+[project.urls]
+Homepage = "https://github.com/Vead-YI/token-saver-action"
+Repository = "https://github.com/Vead-YI/token-saver-action"
+Issues = "https://github.com/Vead-YI/token-saver-action/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["token_saver*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I"]
