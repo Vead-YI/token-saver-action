@@ -10,19 +10,18 @@ import re
 
 # 中文礼貌用语模式（可安全删除）
 _POLITE_PATTERNS_ZH = [
-    r"(请|麻烦|劳烦|烦请|辛苦|拜托)[你您]?",
-    r"谢谢[你您]?[的]?[帮助回答解答]?",
-    r"感谢[你您]?[的]?[帮助回答解答]?",
-    r"非常感[激谢]",
-    r"[十分非常很]?感[激谢]",
-    r"[希望]?期待[你您的]?[回复回答]",
+    r"(麻烦|劳烦|烦请|辛苦|拜托)[你您了]?[，,]?\s*",
+    r"谢谢[你您]?[的]?(帮助|回答|解答|支持)?[！!。.]?\s*",
+    r"感谢[你您]?[的]?(帮助|回答|解答|支持)?[！!。.]?\s*",
+    r"非常感[激谢][！!。.]?\s*",
+    r"[十分非常很]感[激谢][！!。.]?\s*",
+    r"[希望]?期待[你您的]?(回复|回答)[！!。.]?\s*",
 ]
 
 # 英文礼貌用语模式
 _POLITE_PATTERNS_EN = [
     r"\bplease\b\s*",
-    r"\bthank you\b[.!]?\s*",
-    r"\bthanks\b[.!]?\s*",
+    r"\bthank(?:s| you)\b[.!,]?\s*(?:very much|so much)?[.!]?\s*",
     r"\bi would appreciate\b[^.]*\.",
     r"\bif you could\b",
     r"\bwould you mind\b",
@@ -103,13 +102,21 @@ class TextCompressor:
         return text
 
     def _clean_whitespace(self, text: str) -> str:
-        """清理多余空白"""
+        """清理多余空白和残留标点"""
         # 多个空行合并为一个
         text = re.sub(r"\n{3,}", "\n\n", text)
         # 行尾空格
         text = re.sub(r"[ \t]+$", "", text, flags=re.MULTILINE)
         # 多个空格合并
         text = re.sub(r"  +", " ", text)
+        # 清理连续的中文标点（如 "，，" "。。"）
+        text = re.sub(r"[，,]{2,}", "，", text)
+        text = re.sub(r"[。.]{2,}", "。", text)
+        # 清理句首/句尾多余的标点
+        text = re.sub(r"^[，,。、；;]+", "", text, flags=re.MULTILINE)
+        text = re.sub(r"[，,、；;]+$", "", text, flags=re.MULTILINE)
+        # 清理 "very much!" 这类英文残留（thank you 被删后留下的）
+        text = re.sub(r"(?i)^(very much|so much)[.!]?\s*$", "", text, flags=re.MULTILINE)
         return text
 
     def _deduplicate_sentences(self, text: str) -> str:
