@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .token_counter import TokenCounter
 
 
@@ -55,27 +57,26 @@ class ContextManager:
         if remaining_budget <= 0:
             return system_msgs
 
-        # 强制保留最后 N 条
-        tail = conv_msgs[-keep_last:] if len(conv_msgs) > keep_last else conv_msgs
-        head = conv_msgs[:-keep_last] if len(conv_msgs) > keep_last else []
+        # 优先保留最后 N 条，但如果预算不足，也要尽量保留最近且重要的消息
+        tail_start = max(len(conv_msgs) - keep_last, 0)
+        tail_candidates = list(enumerate(conv_msgs[tail_start:], start=tail_start))
+        head_candidates = list(enumerate(conv_msgs[:tail_start]))
 
-        tail_tokens = self.counter.count_messages(tail)
-        remaining_budget -= tail_tokens
+        tail_messages = [msg for _, msg in tail_candidates]
+        tail_tokens = self.counter.count_messages(tail_messages) if tail_messages else 0
+        if tail_messages and tail_tokens <= remaining_budget:
+            selected_tail = tail_messages
+            remaining_budget -= tail_tokens
+        else:
+            selected_tail, remaining_budget = self._select_recent_messages(
+                tail_candidates, remaining_budget
+            )
 
-        if remaining_budget <= 0 or not head:
-            return system_msgs + tail
+        if not head_candidates or remaining_budget <= 0:
+            return system_msgs + selected_tail
 
-        # 从最近到最早，贪心地加入 head 中的消息
-        selected_head = []
-        for msg in reversed(head):
-            msg_tokens = self.counter.count_messages([msg])
-            if remaining_budget >= msg_tokens:
-                selected_head.insert(0, msg)
-                remaining_budget -= msg_tokens
-            else:
-                break  # 预算不足，停止
-
-        return system_msgs + selected_head + tail
+        selected_head = self._select_priority_messages(head_candidates, remaining_budget)
+        return system_msgs + selected_head + selected_tail
 
     def summarize_old_messages(self, messages: list[dict], keep_last: int = 6) -> list[dict]:
         """
@@ -126,3 +127,81 @@ class ContextManager:
             "tokens_by_role": by_role,
             "avg_tokens_per_message": total_tokens // max(len(messages), 1),
         }
+
+    def _select_recent_messages(
+        self,
+        indexed_messages: list[tuple[int, dict]],
+        remaining_budget: int,
+    ) -> tuple[list[dict], int]:
+        """尽可能保留最近消息，预算不足时按时间倒序回退。"""
+        selected: list[tuple[int, dict]] = []
+
+        for idx, msg in reversed(indexed_messages):
+            msg_tokens = self._message_tokens(msg)
+            if remaining_budget < msg_tokens:
+                continue
+            selected.append((idx, msg))
+            remaining_budget -= msg_tokens
+
+        selected.sort(key=lambda item: item[0])
+        return [msg for _, msg in selected], remaining_budget
+
+    def _select_priority_messages(
+        self,
+        indexed_messages: list[tuple[int, dict]],
+        remaining_budget: int,
+    ) -> list[dict]:
+        """在剩余预算内保留更重要的早期消息。"""
+        scored = []
+        for idx, msg in indexed_messages:
+            score = self._message_priority(msg, idx, len(indexed_messages))
+            tokens = self._message_tokens(msg)
+            scored.append((score, idx, tokens, msg))
+
+        scored.sort(key=lambda item: (-item[0], -item[1]))
+
+        selected: list[tuple[int, dict]] = []
+        for _, idx, tokens, msg in scored:
+            if tokens > remaining_budget:
+                continue
+            selected.append((idx, msg))
+            remaining_budget -= tokens
+
+        selected.sort(key=lambda item: item[0])
+        return [msg for _, msg in selected]
+
+    def _message_priority(self, msg: dict, idx: int, total: int) -> int:
+        """根据角色、内容特征和时间位置粗略评估消息价值。"""
+        role = msg.get("role", "")
+        content = str(msg.get("content", ""))
+
+        base_scores = {
+            "user": 40,
+            "assistant": 24,
+            "tool": 28,
+        }
+        score = base_scores.get(role, 18)
+
+        lowered = content.lower()
+        important_patterns = [
+            r"```",
+            r"\b(error|exception|traceback|failing|failed|bug|fix)\b",
+            r"\b(todo|requirement|constraint|expected|actual)\b",
+            r"[？?]",
+        ]
+        for pattern in important_patterns:
+            if re.search(pattern, lowered, flags=re.IGNORECASE):
+                score += 8
+
+        if len(content) > 400:
+            score += 4
+
+        # 越近的早期消息优先级越高，但不完全压倒内容价值
+        if total > 0:
+            score += int((idx / total) * 10)
+
+        return score
+
+    def _message_tokens(self, msg: dict) -> int:
+        """估算单条消息的 token 成本，避免重复计算对话收尾开销。"""
+        return 4 + self.counter.count(msg.get("role", "")) + self.counter.count(msg.get("content", ""))

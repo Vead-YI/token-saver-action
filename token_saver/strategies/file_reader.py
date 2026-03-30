@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ast
+import difflib
 import re
 from pathlib import Path
 
@@ -52,29 +53,30 @@ class SmartFileReader:
 
         content = path.read_text(encoding="utf-8", errors="replace")
 
-        if max_lines:
-            lines = content.splitlines()
-            if len(lines) > max_lines:
-                content = "\n".join(lines[:max_lines]) + f"\n... (已截断，共 {len(lines)} 行)"
-
         if mode == "full":
-            return content
+            result = content
         elif mode == "signatures":
-            return self._extract_signatures(content, path.suffix)
+            result = self._extract_signatures(content, path.suffix)
         elif mode == "summary":
-            return self._extract_summary(content, path.suffix)
+            result = self._extract_summary(content, path.suffix)
         elif mode == "keywords":
             if not keywords:
                 raise ValueError("mode='keywords' 需要提供 keywords 参数")
-            return self._extract_by_keywords(content, keywords, context_lines)
+            result = self._extract_by_keywords(content, keywords, context_lines)
         elif mode == "diff":
             if previous is None:
-                return content
-            return self._extract_diff(previous, content)
+                result = content
+            else:
+                result = self._extract_diff(previous, content)
         elif mode == "head_tail":
-            return self._extract_head_tail(content, lines=50)
+            result = self._extract_head_tail(content, lines=50)
         else:
             raise ValueError(f"未知的读取模式: {mode}")
+
+        if max_lines:
+            result = self._truncate_lines(result, max_lines)
+
+        return result
 
     def _extract_signatures(self, content: str, suffix: str) -> str:
         """提取函数/类签名"""
@@ -91,32 +93,8 @@ class SmartFileReader:
         lines = []
         try:
             tree = ast.parse(content)
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    # 获取签名行
-                    sig_lines = content.splitlines()[node.lineno - 1 : node.lineno + 2]
-                    lines.append("\n".join(sig_lines))
-                    # 添加文档字符串（如果有）
-                    if (
-                        node.body
-                        and isinstance(node.body[0], ast.Expr)
-                        and isinstance(node.body[0].value, ast.Constant)
-                    ):
-                        docstring = node.body[0].value.value
-                        if isinstance(docstring, str):
-                            lines.append(f'    """{docstring[:100]}"""')
-                    lines.append("")
-                elif isinstance(node, ast.ClassDef):
-                    lines.append(f"class {node.name}:")
-                    if (
-                        node.body
-                        and isinstance(node.body[0], ast.Expr)
-                        and isinstance(node.body[0].value, ast.Constant)
-                    ):
-                        docstring = node.body[0].value.value
-                        if isinstance(docstring, str):
-                            lines.append(f'    """{docstring[:100]}"""')
-                    lines.append("")
+            source_lines = content.splitlines()
+            self._collect_python_signatures(tree.body, source_lines, lines)
         except SyntaxError:
             # 解析失败，退回正则
             return self._generic_signatures(content)
@@ -213,35 +191,20 @@ class SmartFileReader:
 
     def _extract_diff(self, previous: str, current: str) -> str:
         """提取两个版本之间的差异"""
-        prev_lines = previous.splitlines()
-        curr_lines = current.splitlines()
+        diff_lines = list(
+            difflib.unified_diff(
+                previous.splitlines(),
+                current.splitlines(),
+                fromfile="previous",
+                tofile="current",
+                lineterm="",
+                n=2,
+            )
+        )
 
-        added = []
-        removed = []
-
-        prev_set = set(prev_lines)
-        curr_set = set(curr_lines)
-
-        for line in curr_lines:
-            if line not in prev_set:
-                added.append(f"+ {line}")
-
-        for line in prev_lines:
-            if line not in curr_set:
-                removed.append(f"- {line}")
-
-        if not added and not removed:
+        if not diff_lines:
             return "[文件无变化]"
-
-        result = []
-        if removed:
-            result.append("=== 删除 ===")
-            result.extend(removed[:20])
-        if added:
-            result.append("=== 新增 ===")
-            result.extend(added[:20])
-
-        return "\n".join(result)
+        return "\n".join(diff_lines[:200])
 
     def _extract_head_tail(self, content: str, lines: int = 50) -> str:
         """读取文件头尾"""
@@ -258,3 +221,42 @@ class SmartFileReader:
             + f"\n\n... [中间省略 {middle_count} 行] ...\n\n"
             + "\n".join(tail)
         )
+
+    def _collect_python_signatures(
+        self,
+        nodes: list[ast.stmt],
+        source_lines: list[str],
+        output: list[str],
+    ) -> None:
+        """按源码顺序收集类和函数签名。"""
+        for node in nodes:
+            if isinstance(node, ast.ClassDef):
+                start = min(node.lineno - 1, len(source_lines) - 1)
+                end_line = start
+                if node.body:
+                    end_line = max(start, node.body[0].lineno - 1)
+                signature = "\n".join(source_lines[start:end_line]).rstrip()
+                output.append(signature if signature else source_lines[start])
+                docstring = ast.get_docstring(node)
+                if docstring:
+                    output.append(f'    """{docstring[:100]}"""')
+                output.append("")
+                self._collect_python_signatures(node.body, source_lines, output)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                start = min(node.lineno - 1, len(source_lines) - 1)
+                end_line = start
+                if node.body:
+                    end_line = max(start, node.body[0].lineno - 1)
+                signature = "\n".join(source_lines[start:end_line]).rstrip()
+                output.append(signature if signature else source_lines[start])
+                docstring = ast.get_docstring(node)
+                if docstring:
+                    output.append('    """' + docstring[:100] + '"""')
+                output.append("")
+
+    def _truncate_lines(self, content: str, max_lines: int) -> str:
+        """统一处理输出截断，避免在提取前破坏结构。"""
+        lines = content.splitlines()
+        if len(lines) <= max_lines:
+            return content
+        return "\n".join(lines[:max_lines]) + f"\n... (已截断，共 {len(lines)} 行)"

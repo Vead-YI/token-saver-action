@@ -6,6 +6,7 @@ import pytest
 from token_saver.core.token_counter import TokenCounter
 from token_saver.core.compressor import TextCompressor
 from token_saver.core.context_manager import ContextManager
+from token_saver.strategies.file_reader import SmartFileReader
 from token_saver.strategies.prompt_optimizer import PromptOptimizer
 
 
@@ -97,6 +98,33 @@ class TestContextManager:
         roles = [m["role"] for m in pruned]
         assert "system" in roles
 
+    def test_prune_keeps_recent_when_budget_is_tight(self):
+        messages = [
+            {"role": "user", "content": "old context"},
+            {"role": "assistant", "content": "older reply"},
+            {"role": "user", "content": "recent short"},
+            {"role": "assistant", "content": "latest"},
+        ]
+        budget = self.manager.counter.count_messages(messages[-2:])
+        pruned = self.manager.prune(messages, max_tokens=budget, keep_last=2, keep_system=False)
+        contents = [m["content"] for m in pruned]
+        assert "recent short" in contents
+        assert "latest" in contents
+
+    def test_prune_prefers_important_early_messages(self):
+        messages = [
+            {"role": "user", "content": "small note"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "Traceback: ValueError in parser.py line 9"},
+            {"role": "assistant", "content": "investigating"},
+            {"role": "user", "content": "recent question"},
+            {"role": "assistant", "content": "recent answer"},
+        ]
+        budget = self.manager.counter.count_messages(messages[-2:]) + self.manager.counter.count_messages([messages[2]])
+        pruned = self.manager.prune(messages, max_tokens=budget, keep_last=2, keep_system=False)
+        contents = [m["content"] for m in pruned]
+        assert "Traceback: ValueError in parser.py line 9" in contents
+
     def test_get_stats(self):
         messages = [
             {"role": "user", "content": "Hello"},
@@ -130,3 +158,45 @@ class TestPromptOptimizer:
         optimized = self.optimizer.optimize(messages, inject_concise=False)
         roles = [m["role"] for m in optimized]
         assert "system" not in roles
+
+
+class TestSmartFileReader:
+    def setup_method(self):
+        self.reader = SmartFileReader()
+
+    def test_python_signatures_keep_source_order(self, tmp_path):
+        file_path = tmp_path / "sample.py"
+        file_path.write_text(
+            'class Greeter:\n'
+            '    """Greeter docs."""\n'
+            '\n'
+            '    def hello(self, name):\n'
+            '        return f"hi {name}"\n'
+            '\n'
+            'def top_level(x, y):\n'
+            '    """Top docs."""\n'
+            '    return x + y\n',
+            encoding="utf-8",
+        )
+
+        result = self.reader.read(file_path, mode="signatures")
+
+        assert "class Greeter:" in result
+        assert "def hello(self, name):" in result
+        assert "def top_level(x, y):" in result
+        assert result.index("class Greeter:") < result.index("def top_level(x, y):")
+
+    def test_diff_mode_uses_unified_diff(self, tmp_path):
+        file_path = tmp_path / "sample.py"
+        file_path.write_text("a = 1\nb = 3\n", encoding="utf-8")
+
+        result = self.reader.read(
+            file_path,
+            mode="diff",
+            previous="a = 1\nb = 2\n",
+        )
+
+        assert "--- previous" in result
+        assert "+++ current" in result
+        assert "-b = 2" in result
+        assert "+b = 3" in result
