@@ -7,25 +7,11 @@ from __future__ import annotations
 
 from ..core.compressor import TextCompressor
 from ..core.token_counter import TokenCounter
-
-
-# 注入到 System Prompt 的简洁性指令（中文版）
-CONCISE_SYSTEM_INJECTION_ZH = """
-回答要求：
-- 直接给出答案，不重复我的问题
-- 代码用代码块，不用文字描述代码
-- 省略显而易见的解释
-- 如无必要，不加免责声明
-""".strip()
-
-# 英文版
-CONCISE_SYSTEM_INJECTION_EN = """
-Response rules:
-- Answer directly, don't restate my question
-- Use code blocks for code, not prose descriptions
-- Skip obvious explanations
-- Omit disclaimers unless critical
-""".strip()
+from .output_controller import (
+    CONCISE_SYSTEM_INJECTION_EN,
+    CONCISE_SYSTEM_INJECTION_ZH,
+    OutputController,
+)
 
 
 class PromptOptimizer:
@@ -43,6 +29,7 @@ class PromptOptimizer:
         self.compressor = TextCompressor()
         self.counter = TokenCounter(model=model)
         self.language = language
+        self.output_controller = OutputController(language=language)
 
     def optimize(
         self,
@@ -155,9 +142,7 @@ class PromptOptimizer:
         return system_content + "\n\n" + injection
 
     def _get_concise_injection(self) -> str:
-        if self.language == "zh":
-            return CONCISE_SYSTEM_INJECTION_ZH
-        return CONCISE_SYSTEM_INJECTION_EN
+        return self.output_controller.get_concise_injection()
 
     def structurize(self, text: str) -> str:
         """

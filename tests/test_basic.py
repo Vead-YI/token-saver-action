@@ -7,6 +7,8 @@ from token_saver.core.token_counter import TokenCounter
 from token_saver.core.compressor import TextCompressor
 from token_saver.core.context_manager import ContextManager
 from token_saver.strategies.file_reader import SmartFileReader
+from token_saver.strategies.history_pruner import HistoryPruner
+from token_saver.strategies.output_controller import OutputController
 from token_saver.strategies.prompt_optimizer import PromptOptimizer
 
 
@@ -68,6 +70,31 @@ class TestTextCompressor:
         text = "line1\n\n\n\nline2"
         compressed = self.compressor.compress(text, level="light")
         assert "\n\n\n" not in compressed
+
+    def test_compress_preserves_code_blocks(self):
+        text = (
+            "请帮我分析下面代码，谢谢。\n\n"
+            "```python\n"
+            "# keep comment in moderate mode\n"
+            "def add(a, b):\n"
+            "    return a + b\n"
+            "```\n"
+        )
+        compressed = self.compressor.compress(text, level="moderate")
+        assert "```python" in compressed
+        assert "# keep comment in moderate mode" in compressed
+
+    def test_compress_deduplicates_list_items_and_intents(self):
+        text = (
+            "请帮我分析这段代码。\n"
+            "请帮我分析这段代码！\n"
+            "- 修复 bug\n"
+            "- 修复 bug\n"
+            "- 给出优化建议\n"
+        )
+        compressed = self.compressor.compress(text, level="moderate")
+        assert compressed.count("分析这段代码") == 1
+        assert compressed.count("修复 bug") == 1
 
 
 class TestContextManager:
@@ -158,6 +185,36 @@ class TestPromptOptimizer:
         optimized = self.optimizer.optimize(messages, inject_concise=False)
         roles = [m["role"] for m in optimized]
         assert "system" not in roles
+
+
+class TestHistoryPruner:
+    def setup_method(self):
+        self.pruner = HistoryPruner()
+
+    def test_analyze_returns_savings(self):
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ]
+        result = self.pruner.analyze(messages, max_tokens=20, keep_last=1)
+        assert "savings_pct" in result
+        assert "messages" in result
+
+
+class TestOutputController:
+    def setup_method(self):
+        self.controller = OutputController(language="zh")
+
+    def test_apply_to_system_appends_budget(self):
+        result = self.controller.apply_to_system(
+            system_prompt="你是助手。",
+            max_sentences=4,
+            prefer_bullets=True,
+            require_code_first=True,
+        )
+        assert "你是助手。" in result
+        assert "非必要不超过 4 句" in result
+        assert "优先给代码或命令" in result
 
 
 class TestSmartFileReader:

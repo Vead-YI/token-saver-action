@@ -66,22 +66,37 @@ class TextCompressor:
         if not text or not text.strip():
             return text
 
+        blocks = self._split_blocks(text)
+        processed_blocks = []
+
+        for block_type, block in blocks:
+            if block_type == "code":
+                processed = block if level != "aggressive" else self._compress_code_context(block)
+            else:
+                processed = self._compress_plain_text(block, level)
+            if processed.strip():
+                processed_blocks.append(processed.strip("\n"))
+
+        return "\n\n".join(processed_blocks).strip()
+
+    def _compress_plain_text(self, text: str, level: str) -> str:
+        """仅压缩自然语言部分，避免误伤代码块。"""
         result = text
 
-        # Level 1: light — 基础清理
         result = self._remove_polite_phrases(result)
         result = self._clean_whitespace(result)
 
         if level in ("moderate", "aggressive"):
             result = self._remove_filler_openers(result)
             result = self._remove_trailing_pleasantries(result)
+            result = self._deduplicate_list_items(result)
+            result = self._deduplicate_intents(result)
             result = self._deduplicate_sentences(result)
 
         if level == "aggressive":
-            result = self._compress_code_context(result)
             result = self._shorten_instructions(result)
 
-        return result.strip()
+        return self._clean_whitespace(result)
 
     def _remove_polite_phrases(self, text: str) -> str:
         """去除礼貌用语"""
@@ -133,6 +148,70 @@ class TextCompressor:
             result.append(line)
         return "\n".join(result)
 
+    def _deduplicate_list_items(self, text: str) -> str:
+        """保留列表结构，同时去掉重复条目。"""
+        lines = text.splitlines()
+        seen = set()
+        result = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                result.append(line)
+                continue
+
+            normalized = re.sub(r"^([-*•]|\d+[.)])\s*", "", stripped).lower()
+            if re.match(r"^([-*•]|\d+[.)])\s+", stripped):
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+            result.append(line)
+        return "\n".join(result)
+
+    def _deduplicate_intents(self, text: str) -> str:
+        """按意图去重，而不是只按整行去重。"""
+        pieces = re.split(r"([。.!！?？\n])", text)
+        if len(pieces) <= 2:
+            return text
+
+        result = []
+        seen = set()
+        i = 0
+        while i < len(pieces):
+            content = pieces[i].strip()
+            separator = pieces[i + 1] if i + 1 < len(pieces) else ""
+            if not content:
+                if separator:
+                    result.append(separator)
+                i += 2
+                continue
+
+            normalized = self._normalize_intent(content)
+            if normalized and normalized in seen:
+                i += 2
+                continue
+            if normalized:
+                seen.add(normalized)
+            result.append(content + separator)
+            i += 2
+
+        return "".join(result)
+
+    def _normalize_intent(self, text: str) -> str:
+        """把相似指令归一化，便于合并重复意图。"""
+        normalized = text.lower()
+        normalized = re.sub(r"\s+", "", normalized)
+        normalized = re.sub(r"[，,。.!！？?；;:：'\"“”‘’()（）\[\]{}]", "", normalized)
+        replacements = [
+            (r"(请你|请您|请|帮我|麻烦你|能不能|可以|帮忙)", ""),
+            (r"(分析一下|分析下|分析)", "分析"),
+            (r"(解释一下|解释下|解释说明|说明一下|说明)", "解释"),
+            (r"(修复一下|修复下|修复问题|修一下)", "修复"),
+            (r"(优化一下|优化下|优化建议|改进建议)", "优化"),
+        ]
+        for pattern, replacement in replacements:
+            normalized = re.sub(pattern, replacement, normalized)
+        return normalized
+
     def _compress_code_context(self, text: str) -> str:
         """
         压缩代码上下文：
@@ -165,3 +244,14 @@ class TextCompressor:
         for pattern, replacement in replacements:
             text = re.sub(pattern, replacement, text)
         return text
+
+    def _split_blocks(self, text: str) -> list[tuple[str, str]]:
+        """按 Markdown 代码块切分，代码与自然语言分别处理。"""
+        parts = re.split(r"(```[\s\S]*?```)", text)
+        blocks = []
+        for part in parts:
+            if not part:
+                continue
+            block_type = "code" if part.startswith("```") and part.endswith("```") else "text"
+            blocks.append((block_type, part))
+        return blocks

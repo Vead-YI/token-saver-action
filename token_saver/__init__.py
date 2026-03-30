@@ -6,9 +6,20 @@ token_saver — 节省Token行动
 from .core.compressor import TextCompressor
 from .core.context_manager import ContextManager
 from .core.token_counter import TokenCounter
+from .strategies.history_pruner import HistoryPruner
+from .strategies.output_controller import OutputController
+from .strategies.prompt_optimizer import PromptOptimizer
 
 __version__ = "0.1.0"
-__all__ = ["TokenSaver", "TextCompressor", "ContextManager", "TokenCounter"]
+__all__ = [
+    "ContextManager",
+    "HistoryPruner",
+    "OutputController",
+    "PromptOptimizer",
+    "TokenCounter",
+    "TokenSaver",
+    "TextCompressor",
+]
 
 
 class TokenSaver:
@@ -19,6 +30,9 @@ class TokenSaver:
         self.counter = TokenCounter(model=model)
         self.compressor = TextCompressor()
         self.context_manager = ContextManager(counter=self.counter)
+        self.history_pruner = HistoryPruner(model=model, counter=self.counter)
+        self.output_controller = OutputController(language="zh")
+        self.prompt_optimizer = PromptOptimizer(model=model)
 
     def count_tokens(self, text: str) -> int:
         """统计文本的 Token 数量"""
@@ -48,7 +62,29 @@ class TokenSaver:
         Returns:
             优化后的消息列表
         """
-        return self.context_manager.prune(messages, max_tokens=max_tokens)
+        return self.history_pruner.prune(messages, max_tokens=max_tokens)
+
+    def get_concise_injection(self, language: str = "zh") -> str:
+        """获取可注入 System Prompt 的简洁性指令。"""
+        controller = OutputController(language=language)
+        return controller.get_concise_injection()
+
+    def control_output(
+        self,
+        system_prompt: str = "",
+        max_sentences: int | None = None,
+        prefer_bullets: bool = False,
+        require_code_first: bool = False,
+        language: str = "zh",
+    ) -> str:
+        """构建附带输出预算的 system prompt。"""
+        controller = OutputController(language=language)
+        return controller.apply_to_system(
+            system_prompt=system_prompt,
+            max_sentences=max_sentences,
+            prefer_bullets=prefer_bullets,
+            require_code_first=require_code_first,
+        )
 
     def stats(self, text: str) -> dict:
         """返回文本的 Token 统计信息"""
